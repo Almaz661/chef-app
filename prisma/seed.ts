@@ -1,14 +1,17 @@
 /* eslint-disable no-console */
-import { PrismaClient, UnitKind } from '@prisma/client';
+import { InventoryLocation, PrismaClient, RecipeGroup, UnitKind } from '@prisma/client';
 
 import { normalizeText } from '../src/matching/text-normalize';
 
 import { PRODUCT_CONVERSIONS } from './data/conversions';
 import { DAIRY, FRUITS, GRAINS, PROTEINS, VEGETABLES } from './data/products-fresh';
 import { PANTRY, SPICES } from './data/products-pantry';
+import { PREPS } from './data/products-prep';
+import { PREP_RECIPES } from './data/recipes-prep';
 import { RECIPES } from './data/recipes';
 import { GLOBAL_CONVERSIONS, UNITS, UnitKindLiteral } from './data/units';
 import type { SeedProduct } from './data/products-fresh';
+import type { SeedRecipe } from './data/recipes';
 
 const prisma = new PrismaClient();
 
@@ -20,7 +23,10 @@ const ALL_PRODUCTS: SeedProduct[] = [
   ...DAIRY,
   ...SPICES,
   ...PANTRY,
+  ...PREPS,
 ];
+
+const ALL_RECIPES: SeedRecipe[] = [...RECIPES, ...PREP_RECIPES];
 
 // Detect duplicate slugs at startup so two files don't silently fight each
 // other (e.g. tomato listed both in fresh and pantry).
@@ -32,6 +38,15 @@ function assertNoDuplicateSlugs(): void {
       throw new Error(`duplicate product slug "${p.slug}" (named "${p.name}" and "${prev}")`);
     }
     seen.set(p.slug, p.name);
+  }
+
+  const seenR = new Map<string, string>();
+  for (const r of ALL_RECIPES) {
+    const prev = seenR.get(r.slug);
+    if (prev) {
+      throw new Error(`duplicate recipe slug "${r.slug}" (titled "${prev}" and "${r.title}")`);
+    }
+    seenR.set(r.slug, r.title);
   }
 }
 
@@ -85,6 +100,7 @@ async function seedProducts(): Promise<void> {
         fatPer100: p.fatPer100,
         carbsPer100: p.carbsPer100,
         tags: p.tags ?? [],
+        isPrep: p.isPrep ?? false,
       },
       create: {
         slug: p.slug,
@@ -96,6 +112,7 @@ async function seedProducts(): Promise<void> {
         fatPer100: p.fatPer100,
         carbsPer100: p.carbsPer100,
         tags: p.tags ?? [],
+        isPrep: p.isPrep ?? false,
       },
     });
 
@@ -146,21 +163,59 @@ async function seedProductConversions(): Promise<void> {
 }
 
 async function seedRecipes(): Promise<void> {
-  for (const r of RECIPES) {
+  for (const r of ALL_RECIPES) {
+    // Phase 6.7: resolve producesProductSlug → productId before upsert.
+    let producesProductId: string | null = null;
+    if (r.producesProductSlug) {
+      const produced = await prisma.product.findUnique({
+        where: { slug: r.producesProductSlug },
+        select: { id: true, isPrep: true },
+      });
+      if (!produced) {
+        throw new Error(
+          `recipe "${r.slug}" references missing prep product "${r.producesProductSlug}"`,
+        );
+      }
+      if (!produced.isPrep) {
+        throw new Error(
+          `recipe "${r.slug}" produces "${r.producesProductSlug}" which is not flagged isPrep`,
+        );
+      }
+      producesProductId = produced.id;
+    }
+
+    const prepData = producesProductId
+      ? {
+          producesProductId,
+          prepYieldQuantity: r.prepYieldQuantity!,
+          prepYieldUnitId: r.prepYieldUnitId!,
+          prepDefaultLocation: r.prepDefaultLocation as InventoryLocation,
+          prepShelfLifeDays: r.prepShelfLifeDays!,
+        }
+      : {
+          producesProductId: null,
+          prepYieldQuantity: null,
+          prepYieldUnitId: null,
+          prepDefaultLocation: null,
+          prepShelfLifeDays: null,
+        };
+
     const recipe = await prisma.recipe.upsert({
       where: { slug: r.slug },
       update: {
         title: r.title,
         description: r.description,
         servings: r.servings,
-        group: r.group,
+        group: r.group as RecipeGroup,
+        ...prepData,
       },
       create: {
         slug: r.slug,
         title: r.title,
         description: r.description,
         servings: r.servings,
-        group: r.group,
+        group: r.group as RecipeGroup,
+        ...prepData,
       },
     });
 
@@ -204,13 +259,15 @@ async function main(): Promise<void> {
   console.log(`[seed] global unit conversions... (${GLOBAL_CONVERSIONS.length})`);
   await seedGlobalConversions();
 
-  console.log(`[seed] products & aliases... (${ALL_PRODUCTS.length} products)`);
+  console.log(
+    `[seed] products & aliases... (${ALL_PRODUCTS.length} products, ${PREPS.length} preps)`,
+  );
   await seedProducts();
 
   console.log(`[seed] product-specific conversions... (${PRODUCT_CONVERSIONS.length})`);
   await seedProductConversions();
 
-  console.log(`[seed] recipes... (${RECIPES.length})`);
+  console.log(`[seed] recipes... (${ALL_RECIPES.length}, ${PREP_RECIPES.length} prep)`);
   await seedRecipes();
 
   console.log('[seed] done.');
