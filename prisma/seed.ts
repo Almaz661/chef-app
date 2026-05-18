@@ -3,120 +3,68 @@ import { PrismaClient, UnitKind } from '@prisma/client';
 
 import { normalizeText } from '../src/matching/text-normalize';
 
+import { PRODUCT_CONVERSIONS } from './data/conversions';
+import { DAIRY, FRUITS, GRAINS, PROTEINS, VEGETABLES } from './data/products-fresh';
+import { PANTRY, SPICES } from './data/products-pantry';
+import { RECIPES } from './data/recipes';
+import { GLOBAL_CONVERSIONS, UNITS, UnitKindLiteral } from './data/units';
+import type { SeedProduct } from './data/products-fresh';
+
 const prisma = new PrismaClient();
 
-interface SeedProduct {
-  slug: string;
-  name: string;
-  category: string;
-  baseUnitId: string;
-  aliases: string[];
-  kcalPer100?: number;
-  proteinPer100?: number;
-  fatPer100?: number;
-  carbsPer100?: number;
-  tags?: string[];
+const ALL_PRODUCTS: SeedProduct[] = [
+  ...VEGETABLES,
+  ...FRUITS,
+  ...GRAINS,
+  ...PROTEINS,
+  ...DAIRY,
+  ...SPICES,
+  ...PANTRY,
+];
+
+// Detect duplicate slugs at startup so two files don't silently fight each
+// other (e.g. tomato listed both in fresh and pantry).
+function assertNoDuplicateSlugs(): void {
+  const seen = new Map<string, string>();
+  for (const p of ALL_PRODUCTS) {
+    const prev = seen.get(p.slug);
+    if (prev) {
+      throw new Error(`duplicate product slug "${p.slug}" (named "${p.name}" and "${prev}")`);
+    }
+    seen.set(p.slug, p.name);
+  }
 }
 
-const UNITS: Array<{ id: string; name: string; kind: UnitKind }> = [
-  { id: 'g', name: 'грамм', kind: UnitKind.MASS },
-  { id: 'kg', name: 'килограмм', kind: UnitKind.MASS },
-  { id: 'ml', name: 'миллилитр', kind: UnitKind.VOLUME },
-  { id: 'l', name: 'литр', kind: UnitKind.VOLUME },
-  { id: 'tbsp', name: 'столовая ложка', kind: UnitKind.VOLUME },
-  { id: 'tsp', name: 'чайная ложка', kind: UnitKind.VOLUME },
-  { id: 'pcs', name: 'штука', kind: UnitKind.COUNT },
-  { id: 'pinch', name: 'щепотка', kind: UnitKind.OTHER },
-];
-
-// Global conversions (independent of product).
-const GLOBAL_CONVERSIONS: Array<{ from: string; to: string; factor: number }> = [
-  { from: 'kg', to: 'g', factor: 1000 },
-  { from: 'g', to: 'kg', factor: 0.001 },
-  { from: 'l', to: 'ml', factor: 1000 },
-  { from: 'ml', to: 'l', factor: 0.001 },
-];
-
-const PRODUCTS: SeedProduct[] = [
-  {
-    slug: 'salt',
-    name: 'Соль',
-    category: 'Приправы',
-    baseUnitId: 'g',
-    aliases: ['соль', 'поваренная соль', 'соль поваренная'],
-    kcalPer100: 0,
-    tags: ['vegan', 'gluten_free'],
-  },
-  {
-    slug: 'flour-wheat',
-    name: 'Мука пшеничная',
-    category: 'Бакалея',
-    baseUnitId: 'g',
-    aliases: ['мука', 'мука пшеничная', 'пшеничная мука'],
-    kcalPer100: 364,
-    proteinPer100: 10.3,
-    fatPer100: 1.1,
-    carbsPer100: 76,
-    tags: ['vegan'],
-  },
-  {
-    slug: 'olive-oil',
-    name: 'Масло оливковое',
-    category: 'Масла',
-    baseUnitId: 'ml',
-    aliases: ['оливковое масло', 'масло оливковое', 'extra virgin olive oil'],
-    kcalPer100: 884,
-    proteinPer100: 0,
-    fatPer100: 100,
-    carbsPer100: 0,
-    tags: ['vegan', 'gluten_free'],
-  },
-  {
-    slug: 'tomato',
-    name: 'Помидор',
-    category: 'Овощи',
-    baseUnitId: 'g',
-    aliases: ['помидор', 'помидоры', 'томат', 'томаты'],
-    kcalPer100: 18,
-    proteinPer100: 0.9,
-    fatPer100: 0.2,
-    carbsPer100: 3.9,
-    tags: ['vegan', 'gluten_free'],
-  },
-];
-
-// Product-specific conversions (e.g. 1 ст.л. муки ≈ 25 г).
-const PRODUCT_CONVERSIONS: Array<{
-  productSlug: string;
-  from: string;
-  to: string;
-  factor: number;
-}> = [
-  { productSlug: 'flour-wheat', from: 'tbsp', to: 'g', factor: 25 },
-  { productSlug: 'flour-wheat', from: 'tsp', to: 'g', factor: 8 },
-  { productSlug: 'olive-oil', from: 'tbsp', to: 'ml', factor: 15 },
-  { productSlug: 'olive-oil', from: 'tsp', to: 'ml', factor: 5 },
-  { productSlug: 'salt', from: 'tsp', to: 'g', factor: 5 },
-  { productSlug: 'salt', from: 'pinch', to: 'g', factor: 0.4 },
-];
+const KIND_MAP: Record<UnitKindLiteral, UnitKind> = {
+  MASS: UnitKind.MASS,
+  VOLUME: UnitKind.VOLUME,
+  COUNT: UnitKind.COUNT,
+  OTHER: UnitKind.OTHER,
+};
 
 async function seedUnits(): Promise<void> {
   for (const u of UNITS) {
+    const kind = KIND_MAP[u.kind];
     await prisma.unit.upsert({
       where: { id: u.id },
-      update: { name: u.name, kind: u.kind },
-      create: u,
+      update: { name: u.name, kind },
+      create: { id: u.id, name: u.name, kind },
     });
   }
 }
 
 async function seedGlobalConversions(): Promise<void> {
   for (const c of GLOBAL_CONVERSIONS) {
-    // We can't put `null` in a unique tuple in upsert, so check + create.
+    // null in a unique tuple isn't usable in upsert — emulate it.
     const existing = await prisma.unitConversion.findFirst({
       where: { productId: null, fromUnitId: c.from, toUnitId: c.to },
     });
-    if (!existing) {
+    if (existing) {
+      await prisma.unitConversion.update({
+        where: { id: existing.id },
+        data: { factor: c.factor },
+      });
+    } else {
       await prisma.unitConversion.create({
         data: { fromUnitId: c.from, toUnitId: c.to, factor: c.factor },
       });
@@ -125,7 +73,7 @@ async function seedGlobalConversions(): Promise<void> {
 }
 
 async function seedProducts(): Promise<void> {
-  for (const p of PRODUCTS) {
+  for (const p of ALL_PRODUCTS) {
     const product = await prisma.product.upsert({
       where: { slug: p.slug },
       update: {
@@ -151,8 +99,12 @@ async function seedProducts(): Promise<void> {
       },
     });
 
-    for (const alias of p.aliases) {
+    // The product name itself + every alias becomes a ProductAlias row,
+    // so the matcher finds it both ways.
+    const aliasTexts = [p.name, ...p.aliases];
+    for (const alias of aliasTexts) {
       const normalized = normalizeText(alias);
+      if (!normalized) continue;
       await prisma.productAlias.upsert({
         where: { normalizedText_locale: { normalizedText: normalized, locale: 'ru' } },
         update: { productId: product.id, text: alias },
@@ -170,7 +122,10 @@ async function seedProducts(): Promise<void> {
 async function seedProductConversions(): Promise<void> {
   for (const c of PRODUCT_CONVERSIONS) {
     const product = await prisma.product.findUnique({ where: { slug: c.productSlug } });
-    if (!product) continue;
+    if (!product) {
+      console.warn(`[seed] conversion skipped: product "${c.productSlug}" not found`);
+      continue;
+    }
     await prisma.unitConversion.upsert({
       where: {
         productId_fromUnitId_toUnitId: {
@@ -190,71 +145,68 @@ async function seedProductConversions(): Promise<void> {
   }
 }
 
-async function seedDemoRecipe(): Promise<void> {
-  // Look up products we need.
-  const tomato = await prisma.product.findUniqueOrThrow({ where: { slug: 'tomato' } });
-  const oliveOil = await prisma.product.findUniqueOrThrow({ where: { slug: 'olive-oil' } });
-  const salt = await prisma.product.findUniqueOrThrow({ where: { slug: 'salt' } });
-
-  const recipe = await prisma.recipe.upsert({
-    where: { slug: 'simple-tomato-salad' },
-    update: {
-      title: 'Простой томатный салат',
-      description: 'Минималистичный салат: помидоры, оливковое масло, соль.',
-      servings: 2,
-    },
-    create: {
-      slug: 'simple-tomato-salad',
-      title: 'Простой томатный салат',
-      description: 'Минималистичный салат: помидоры, оливковое масло, соль.',
-      servings: 2,
-    },
-  });
-
-  // Replace ingredients deterministically so re-running seed is safe.
-  await prisma.recipeIngredient.deleteMany({ where: { recipeId: recipe.id } });
-
-  await prisma.recipeIngredient.createMany({
-    data: [
-      {
-        recipeId: recipe.id,
-        productId: tomato.id,
-        quantity: 300,
-        unitId: 'g',
-        rawText: '300 г помидоров',
-        position: 0,
+async function seedRecipes(): Promise<void> {
+  for (const r of RECIPES) {
+    const recipe = await prisma.recipe.upsert({
+      where: { slug: r.slug },
+      update: { title: r.title, description: r.description, servings: r.servings },
+      create: {
+        slug: r.slug,
+        title: r.title,
+        description: r.description,
+        servings: r.servings,
       },
-      {
+    });
+
+    // Replace ingredients deterministically so re-running seed is safe.
+    await prisma.recipeIngredient.deleteMany({ where: { recipeId: recipe.id } });
+
+    const data = [];
+    for (let i = 0; i < r.ingredients.length; i++) {
+      const ing = r.ingredients[i];
+      const product = await prisma.product.findUnique({
+        where: { slug: ing.productSlug },
+        select: { id: true },
+      });
+      if (!product) {
+        throw new Error(
+          `recipe "${r.slug}" references missing product "${ing.productSlug}"`,
+        );
+      }
+      data.push({
         recipeId: recipe.id,
-        productId: oliveOil.id,
-        quantity: 2,
-        unitId: 'tbsp',
-        rawText: '2 ст.л. оливкового масла',
-        position: 1,
-      },
-      {
-        recipeId: recipe.id,
-        productId: salt.id,
-        quantity: 1,
-        unitId: 'pinch',
-        rawText: 'щепотка соли',
-        position: 2,
-      },
-    ],
-  });
+        productId: product.id,
+        quantity: ing.quantity,
+        unitId: ing.unitId,
+        rawText: ing.rawText,
+        position: i,
+      });
+    }
+
+    if (data.length > 0) {
+      await prisma.recipeIngredient.createMany({ data });
+    }
+  }
 }
 
 async function main(): Promise<void> {
-  console.log('[seed] units…');
+  assertNoDuplicateSlugs();
+
+  console.log(`[seed] units... (${UNITS.length})`);
   await seedUnits();
-  console.log('[seed] global unit conversions…');
+
+  console.log(`[seed] global unit conversions... (${GLOBAL_CONVERSIONS.length})`);
   await seedGlobalConversions();
-  console.log('[seed] products & aliases…');
+
+  console.log(`[seed] products & aliases... (${ALL_PRODUCTS.length} products)`);
   await seedProducts();
-  console.log('[seed] product-specific conversions…');
+
+  console.log(`[seed] product-specific conversions... (${PRODUCT_CONVERSIONS.length})`);
   await seedProductConversions();
-  console.log('[seed] demo recipe…');
-  await seedDemoRecipe();
+
+  console.log(`[seed] recipes... (${RECIPES.length})`);
+  await seedRecipes();
+
   console.log('[seed] done.');
 }
 
