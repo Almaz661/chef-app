@@ -173,9 +173,11 @@ model MenuRecipe {
   servings     Int       @default(1)
   scheduledFor DateTime?
   position     Int       @default(0)
+  cookedAt     DateTime?
 
   @@index([menuId])
   @@index([recipeId])
+  @@index([cookedAt])
   @@map("menu_recipes")
 }
 
