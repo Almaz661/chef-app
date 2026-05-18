@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
+import { AlertsModule } from './alerts/alerts.module';
 import { CookingModule } from './cooking/cooking.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { MatchingModule } from './matching/matching.module';
@@ -25,6 +26,7 @@ import { UnitsModule } from './units/units.module';
     ShoppingModule,
     CookingModule,
     NutritionModule,
+    AlertsModule,
   ],
 })
 export class AppModule {}

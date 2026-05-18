@@ -1,18 +1,34 @@
 /**
- * Pure consumption planner.
+ * Pure batch-aware consumption planner (Phase 4).
  *
- * Decides how to take `needs` (already in product base units) out of
- * `stock` (also in base units, grouped by product → location list).
+ * Takes a list of `needs` (already in product base units) and decides
+ * which inventory batches to drain, in what order, and by how much.
  *
- * It does NOT mutate the database. The caller (CookingService) executes
- * the plan inside a single prisma.$transaction.
+ * Order priority:
+ *   1. preferLocation, then fallbackOrder (default PANTRY → FRIDGE → FREEZER).
+ *   2. Inside each location, batches are sorted:
+ *        a. expired first (expiresAt < now);
+ *        b. then by expiresAt asc, with `null` (no expiry) at the very end;
+ *        c. tiebreaker: acquiredAt asc (older first).
  *
- * If any product cannot be satisfied, the result is `ok: false` with
- * `lines: []` and a populated `shortages` array. There is intentionally
- * no concept of partial cooking — the caller must reject the request.
+ * Side-effect-free. Caller (CookingService) executes the plan inside one
+ * prisma.$transaction.
+ *
+ * If any product cannot be fully satisfied, result is `ok: false` with
+ * `lines: []` — we never produce a partial cook.
  */
 
 export type Loc = 'PANTRY' | 'FRIDGE' | 'FREEZER';
+
+export interface Batch {
+  id: string;
+  productId: string;
+  location: Loc;
+  /** Quantity in product base unit. */
+  quantity: number;
+  expiresAt: Date | null;
+  acquiredAt: Date;
+}
 
 export interface Need {
   productId: string;
@@ -21,26 +37,31 @@ export interface Need {
   baseUnitId: string;
 }
 
-export interface StockEntry {
-  location: Loc;
-  /** Quantity in base unit. */
-  quantity: number;
-}
-
-export interface PlanInput {
+export interface PickInput {
   needs: readonly Need[];
-  stock: ReadonlyMap<string, readonly StockEntry[]>;
+  /** Batches grouped by productId. */
+  batches: ReadonlyMap<string, readonly Batch[]>;
   preferLocation?: Loc;
-  /** All locations that may be drained, in order. Default `['PANTRY','FRIDGE','FREEZER']`. */
   fallbackOrder?: readonly Loc[];
+  /** "Now" used to decide which batches are already expired. */
+  now: Date;
 }
 
-export interface PlanLine {
+export interface PickTake {
+  batchId: string;
+  location: Loc;
+  /** Quantity to subtract from the batch (in base unit). */
+  quantity: number;
+  /** True iff this batch was already past its expiry at `now`. */
+  expired: boolean;
+}
+
+export interface PickLine {
   productId: string;
   baseUnitId: string;
-  /** Sum of `takeFrom[*].quantity`. */
+  /** Sum of takes' quantities. */
   quantity: number;
-  takeFrom: { location: Loc; quantity: number }[];
+  takes: PickTake[];
 }
 
 export interface Shortage {
@@ -49,19 +70,15 @@ export interface Shortage {
   have: number;
 }
 
-export interface PlanResult {
+export interface PickResult {
   ok: boolean;
-  lines: PlanLine[];
+  lines: PickLine[];
   shortages: Shortage[];
 }
 
 const DEFAULT_ORDER: readonly Loc[] = ['PANTRY', 'FRIDGE', 'FREEZER'];
 const EPS = 1e-9;
 
-/**
- * Build the order of locations to drain: preferred one first (if listed),
- * then the rest of `fallbackOrder` minus duplicates.
- */
 function locationOrder(prefer: Loc | undefined, fallback: readonly Loc[]): Loc[] {
   const seen = new Set<Loc>();
   const out: Loc[] = [];
@@ -78,36 +95,86 @@ function locationOrder(prefer: Loc | undefined, fallback: readonly Loc[]): Loc[]
   return out;
 }
 
-export function planConsumption(input: PlanInput): PlanResult {
+/**
+ * Sort batches inside one location by FEFO with deterministic tiebreaks.
+ * Mutates the input array — pass a copy if you care.
+ */
+function sortBatchesFEFO(list: Batch[], now: Date): Batch[] {
+  const nowMs = now.getTime();
+  return list.sort((a, b) => {
+    const aExp = a.expiresAt ? a.expiresAt.getTime() : null;
+    const bExp = b.expiresAt ? b.expiresAt.getTime() : null;
+    const aPast = aExp !== null && aExp < nowMs;
+    const bPast = bExp !== null && bExp < nowMs;
+
+    // Already-expired first, but only relative to non-expired ones.
+    if (aPast !== bPast) return aPast ? -1 : 1;
+
+    // Both have a date (or both expired) → soonest first.
+    if (aExp !== null && bExp !== null) {
+      if (aExp !== bExp) return aExp - bExp;
+    } else if (aExp === null && bExp !== null) {
+      return 1;  // null goes last
+    } else if (aExp !== null && bExp === null) {
+      return -1; // dated goes first
+    }
+
+    // Tiebreak by acquiredAt asc (older first).
+    const aAcq = a.acquiredAt.getTime();
+    const bAcq = b.acquiredAt.getTime();
+    if (aAcq !== bAcq) return aAcq - bAcq;
+
+    // Final tiebreak by id for absolute determinism.
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}
+
+export function pickBatches(input: PickInput): PickResult {
   const order = locationOrder(input.preferLocation, input.fallbackOrder ?? DEFAULT_ORDER);
-  const lines: PlanLine[] = [];
+  const lines: PickLine[] = [];
   const shortages: Shortage[] = [];
+  const nowMs = input.now.getTime();
 
   for (const need of input.needs) {
-    if (need.quantity <= EPS) continue; // 0-need ingredient: skip silently
+    if (need.quantity <= EPS) continue;
 
-    const stockList = input.stock.get(need.productId) ?? [];
-    // Index stock by location for O(1) access; default 0.
-    const byLoc = new Map<Loc, number>();
-    for (const e of stockList) {
-      byLoc.set(e.location, (byLoc.get(e.location) ?? 0) + e.quantity);
+    const all = input.batches.get(need.productId) ?? [];
+    // Group by location.
+    const byLoc = new Map<Loc, Batch[]>();
+    for (const b of all) {
+      const list = byLoc.get(b.location) ?? [];
+      list.push(b);
+      byLoc.set(b.location, list);
     }
 
     let remaining = need.quantity;
-    const takes: { location: Loc; quantity: number }[] = [];
+    const takes: PickTake[] = [];
 
     for (const loc of order) {
       if (remaining <= EPS) break;
-      const have = byLoc.get(loc) ?? 0;
-      if (have <= EPS) continue;
-      const take = Math.min(have, remaining);
-      takes.push({ location: loc, quantity: take });
-      remaining -= take;
-      byLoc.set(loc, have - take);
+      const bucket = byLoc.get(loc);
+      if (!bucket || bucket.length === 0) continue;
+
+      const sorted = sortBatchesFEFO([...bucket], input.now);
+      for (const batch of sorted) {
+        if (remaining <= EPS) break;
+        if (batch.quantity <= EPS) continue;
+
+        const take = Math.min(batch.quantity, remaining);
+        const expired =
+          batch.expiresAt !== null && batch.expiresAt.getTime() < nowMs;
+        takes.push({
+          batchId: batch.id,
+          location: loc,
+          quantity: take,
+          expired,
+        });
+        remaining -= take;
+      }
     }
 
     if (remaining > EPS) {
-      const totalHave = stockList.reduce((s, e) => s + e.quantity, 0);
+      const totalHave = all.reduce((s, b) => s + b.quantity, 0);
       shortages.push({
         productId: need.productId,
         need: need.quantity,
@@ -118,14 +185,16 @@ export function planConsumption(input: PlanInput): PlanResult {
         productId: need.productId,
         baseUnitId: need.baseUnitId,
         quantity: need.quantity,
-        takeFrom: takes,
+        takes,
       });
     }
   }
 
-  // Deterministic order so tests / API responses are stable.
+  // Deterministic order across products.
   lines.sort((a, b) => (a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0));
-  shortages.sort((a, b) => (a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0));
+  shortages.sort((a, b) =>
+    a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0,
+  );
 
   if (shortages.length > 0) {
     return { ok: false, lines: [], shortages };
