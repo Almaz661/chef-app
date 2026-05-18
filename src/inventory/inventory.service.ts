@@ -5,6 +5,12 @@ import {
   Prisma,
 } from '@prisma/client';
 
+import {
+  Batch,
+  Loc,
+  Need,
+  pickBatches,
+} from '../cooking/cooking-planner';
 import { PrismaService } from '../prisma/prisma.service';
 
 import { AdjustInventoryDto } from './dto/adjust-inventory.dto';
@@ -13,6 +19,7 @@ import { InventoryLocationDto, ListInventoryDto } from './dto/list-inventory.dto
 type Tx = Prisma.TransactionClient;
 
 const DEFAULT_LOCATION: InventoryLocation = InventoryLocation.PANTRY;
+const FALLBACK_ORDER: readonly Loc[] = ['PANTRY', 'FRIDGE', 'FREEZER'];
 
 export interface AddStockArgs {
   productId: string;
@@ -24,6 +31,8 @@ export interface AddStockArgs {
   refType?: string;
   refId?: string;
   note?: string;
+  /** Optional batch expiry. */
+  expiresAt?: Date | null;
 }
 
 @Injectable()
@@ -36,14 +45,20 @@ export class InventoryService {
         productId: filter.productId,
         location: filter.location as InventoryLocation | undefined,
       },
-      orderBy: [{ productId: 'asc' }, { location: 'asc' }],
+      orderBy: [
+        { productId: 'asc' },
+        { location: 'asc' },
+        { expiresAt: 'asc' },
+        { acquiredAt: 'asc' },
+      ],
       include: { product: { select: { id: true, slug: true, name: true } }, unit: true },
     });
   }
 
   /**
-   * Add stock to inventory inside an existing transaction. Used by
-   * ShoppingService.markPurchased to keep purchase + inventory atomic.
+   * Add stock as a NEW batch inside an existing transaction.
+   * Phase 4: each purchase / positive adjustment becomes its own row so
+   * batches with different expiry dates do not get merged.
    */
   async addStockTx(tx: Tx, args: AddStockArgs): Promise<void> {
     if (args.quantity <= 0) {
@@ -51,17 +66,13 @@ export class InventoryService {
     }
     const location = args.location ?? DEFAULT_LOCATION;
 
-    await tx.inventoryItem.upsert({
-      where: { productId_location: { productId: args.productId, location } },
-      create: {
+    await tx.inventoryItem.create({
+      data: {
         productId: args.productId,
         quantity: args.quantity,
         unitId: args.baseUnitId,
         location,
-      },
-      update: {
-        quantity: { increment: args.quantity },
-        unitId: args.baseUnitId,
+        expiresAt: args.expiresAt ?? null,
       },
     });
 
@@ -89,44 +100,119 @@ export class InventoryService {
     if (!product) throw new NotFoundException(`product ${dto.productId} not found`);
 
     const location = (dto.location as InventoryLocation | undefined) ?? DEFAULT_LOCATION;
+    const expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
 
     return this.prisma.$transaction(async (tx) => {
-      const existing = await tx.inventoryItem.findUnique({
-        where: { productId_location: { productId: product.id, location } },
-      });
-      const current = existing ? Number(existing.quantity) : 0;
-      const next = current + dto.quantity;
-      if (next < 0) {
-        throw new BadRequestException(
-          `adjust: would drop inventory below zero (current=${current}, delta=${dto.quantity})`,
-        );
+      if (dto.quantity > 0) {
+        // Positive adjustment: create a new batch.
+        await tx.inventoryItem.create({
+          data: {
+            productId: product.id,
+            quantity: dto.quantity,
+            unitId: product.baseUnitId,
+            location,
+            expiresAt,
+          },
+        });
+        await tx.inventoryTxn.create({
+          data: {
+            productId: product.id,
+            quantity: dto.quantity,
+            unitId: product.baseUnitId,
+            source: InventoryTxnSource.ADJUSTMENT,
+            note: dto.note,
+          },
+        });
+        return {
+          productId: product.id,
+          location,
+          delta: dto.quantity,
+          createdBatch: true,
+        };
       }
 
-      await tx.inventoryItem.upsert({
-        where: { productId_location: { productId: product.id, location } },
-        create: {
+      // Negative adjustment: FEFO drain across the chosen location
+      // (or all locations if none specified).
+      const drainQty = -dto.quantity;
+      const items = await tx.inventoryItem.findMany({
+        where: {
           productId: product.id,
-          quantity: next,
-          unitId: product.baseUnitId,
-          location,
+          ...(dto.location ? { location } : {}),
         },
-        update: {
-          quantity: next,
-          unitId: product.baseUnitId,
+        select: {
+          id: true,
+          productId: true,
+          location: true,
+          quantity: true,
+          expiresAt: true,
+          acquiredAt: true,
         },
       });
+
+      const grouped = new Map<string, Batch[]>();
+      const list = items.map((b) => ({
+        id: b.id,
+        productId: b.productId,
+        location: b.location as Loc,
+        quantity: Number(b.quantity),
+        expiresAt: b.expiresAt,
+        acquiredAt: b.acquiredAt,
+      }));
+      grouped.set(product.id, list);
+
+      const need: Need = {
+        productId: product.id,
+        quantity: drainQty,
+        baseUnitId: product.baseUnitId,
+      };
+
+      const plan = pickBatches({
+        needs: [need],
+        batches: grouped,
+        preferLocation: dto.location ? location : undefined,
+        fallbackOrder: dto.location ? [location] : FALLBACK_ORDER,
+        now: new Date(),
+      });
+
+      if (!plan.ok) {
+        throw new BadRequestException({
+          message: 'adjust: would drop inventory below zero',
+          shortages: plan.shortages,
+        });
+      }
+
+      for (const line of plan.lines) {
+        for (const take of line.takes) {
+          const row = await tx.inventoryItem.findUnique({
+            where: { id: take.batchId },
+            select: { quantity: true },
+          });
+          if (!row) {
+            throw new BadRequestException(`adjust: batch ${take.batchId} disappeared mid-tx`);
+          }
+          const next = Number(row.quantity) - take.quantity;
+          if (next <= 1e-9) {
+            await tx.inventoryItem.delete({ where: { id: take.batchId } });
+          } else {
+            await tx.inventoryItem.update({
+              where: { id: take.batchId },
+              data: { quantity: next },
+            });
+          }
+        }
+      }
 
       await tx.inventoryTxn.create({
         data: {
           productId: product.id,
-          quantity: dto.quantity,
+          quantity: dto.quantity, // negative
           unitId: product.baseUnitId,
           source: InventoryTxnSource.ADJUSTMENT,
           note: dto.note,
         },
       });
 
-      return { productId: product.id, location, quantity: next };
+      return { productId: product.id, location, delta: dto.quantity };
     });
   }
 
