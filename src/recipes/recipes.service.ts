@@ -4,13 +4,14 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, RecipeGroup } from '@prisma/client';
 
 import { MatchingService } from '../matching/matching.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 import { AddIngredientItemDto, AddIngredientsDto } from './dto/add-ingredients.dto';
 import { CreateRecipeDto } from './dto/create-recipe.dto';
+import { ListRecipesDto } from './dto/list-recipes.dto';
 import { UpdateRecipeDto } from './dto/update-recipe.dto';
 
 interface ProcessedItem {
@@ -25,8 +26,64 @@ export class RecipesService {
     private readonly matching: MatchingService,
   ) {}
 
-  list() {
-    return this.prisma.recipe.findMany({ orderBy: { title: 'asc' } });
+  list(filter: ListRecipesDto = {}) {
+    const where: Prisma.RecipeWhereInput = {};
+
+    if (filter.group) {
+      where.group = filter.group as RecipeGroup;
+    }
+
+    const search = filter.search?.trim();
+    if (search) {
+      where.OR = [
+        { title: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    return this.prisma.recipe.findMany({
+      where,
+      orderBy: { title: 'asc' },
+      select: {
+        id: true,
+        slug: true,
+        title: true,
+        description: true,
+        servings: true,
+        group: true,
+        updatedAt: true,
+      },
+    });
+  }
+
+  /**
+   * Counts of recipes per group, for badges on the navigation buttons.
+   * Always returns one row per known group (zero counts included), so the
+   * UI can render every button regardless of data.
+   */
+  async groupCounts(): Promise<Array<{ group: RecipeGroup | 'UNGROUPED'; count: number }>> {
+    const rows = await this.prisma.recipe.groupBy({
+      by: ['group'],
+      _count: { _all: true },
+    });
+
+    const known: Array<RecipeGroup | 'UNGROUPED'> = [
+      'BREAKFAST',
+      'SOUP',
+      'MAIN',
+      'SALAD',
+      'BAKING',
+      'DESSERT',
+      'DRINK',
+      'UNGROUPED',
+    ];
+
+    const map = new Map<RecipeGroup | 'UNGROUPED', number>();
+    for (const r of rows) {
+      const key = (r.group ?? 'UNGROUPED') as RecipeGroup | 'UNGROUPED';
+      map.set(key, (map.get(key) ?? 0) + r._count._all);
+    }
+    return known.map((g) => ({ group: g, count: map.get(g) ?? 0 }));
   }
 
   async findById(id: string) {
@@ -51,6 +108,7 @@ export class RecipesService {
           title: dto.title,
           description: dto.description,
           servings: dto.servings ?? 1,
+          group: dto.group as RecipeGroup | undefined,
         },
       });
     } catch (err) {
@@ -64,7 +122,16 @@ export class RecipesService {
   async update(id: string, dto: UpdateRecipeDto) {
     await this.findById(id);
     try {
-      return await this.prisma.recipe.update({ where: { id }, data: dto });
+      return await this.prisma.recipe.update({
+        where: { id },
+        data: {
+          slug: dto.slug,
+          title: dto.title,
+          description: dto.description,
+          servings: dto.servings,
+          group: dto.group as RecipeGroup | undefined,
+        },
+      });
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         throw new ConflictException('recipe slug already exists');

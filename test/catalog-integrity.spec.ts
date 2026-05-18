@@ -126,9 +126,30 @@ describe('seed catalog: conversions', () => {
 });
 
 describe('seed catalog: recipes', () => {
+  const VALID_GROUPS = new Set([
+    'BREAKFAST',
+    'SOUP',
+    'MAIN',
+    'SALAD',
+    'BAKING',
+    'DESSERT',
+    'DRINK',
+  ]);
+
   it('every recipe has a unique slug', () => {
     const slugs = RECIPES.map((r) => r.slug);
     expect(new Set(slugs).size).toBe(slugs.length);
+  });
+
+  it('every recipe declares a group from the 7-button menu', () => {
+    const bad = RECIPES.filter((r) => !VALID_GROUPS.has(r.group));
+    expect(bad.map((r) => `${r.slug}:${r.group}`)).toEqual([]);
+  });
+
+  it('every navigation group has at least one recipe', () => {
+    const present = new Set(RECIPES.map((r) => r.group));
+    const missing = [...VALID_GROUPS].filter((g) => !present.has(g as never));
+    expect(missing).toEqual([]);
   });
 
   it('every recipe ingredient references a real product', () => {

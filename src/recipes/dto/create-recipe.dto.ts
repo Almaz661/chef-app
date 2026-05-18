@@ -1,4 +1,5 @@
 import {
+  IsEnum,
   IsInt,
   IsOptional,
   IsString,
@@ -7,6 +8,16 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
+
+export enum RecipeGroupDto {
+  BREAKFAST = 'BREAKFAST',
+  SOUP = 'SOUP',
+  MAIN = 'MAIN',
+  SALAD = 'SALAD',
+  BAKING = 'BAKING',
+  DESSERT = 'DESSERT',
+  DRINK = 'DRINK',
+}
 
 export class CreateRecipeDto {
   @IsString()
@@ -30,4 +41,8 @@ export class CreateRecipeDto {
   @Min(1)
   @IsOptional()
   servings?: number;
+
+  @IsEnum(RecipeGroupDto)
+  @IsOptional()
+  group?: RecipeGroupDto;
 }
