@@ -6,21 +6,17 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InventoryLocation, InventoryTxnSource, Prisma } from '@prisma/client';
+import { InventoryTxnSource, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { convertQuantity } from '../units/unit-conversions';
 import { UnitConverterService } from '../units/unit-converter.service';
 
-import {
-  Loc,
-  Need,
-  StockEntry,
-  planConsumption,
-} from './cooking-planner';
+import { Batch, Loc, Need, pickBatches } from './cooking-planner';
 import { CookDto } from './dto/cook.dto';
 
 const FALLBACK_ORDER: readonly Loc[] = ['PANTRY', 'FRIDGE', 'FREEZER'];
+const EPS = 1e-9;
 
 @Injectable()
 export class CookingService {
@@ -30,13 +26,9 @@ export class CookingService {
   ) {}
 
   /**
-   * Mark a MenuRecipe as cooked. All side effects happen inside ONE
-   * prisma.$transaction:
-   *   - decrement InventoryItem rows according to the plan
-   *   - emit a negative-quantity InventoryTxn per (product, location)
-   *   - set MenuRecipe.cookedAt
-   * If anything fails (insufficient stock, missing conversion, db error),
-   * the entire transaction rolls back. There is no partial-consumed state.
+   * Mark a MenuRecipe as cooked. Phase 4 update: drains inventory by
+   * FEFO across batches (`pickBatches`), deletes empty batches, writes
+   * one InventoryTxn per product. Whole thing inside one $transaction.
    */
   async cook(menuRecipeId: string, dto: CookDto) {
     return this.prisma.$transaction(async (tx) => {
@@ -62,10 +54,8 @@ export class CookingService {
       const recipeServings = mr.recipe.servings || 1;
       const scale = (mr.servings || recipeServings) / recipeServings;
 
-      // 1) build needs in base unit
       const productIds = [...new Set(mr.recipe.ingredients.map((i) => i.productId))];
       if (productIds.length === 0) {
-        // Recipe has no ingredients — just mark cooked.
         await tx.menuRecipe.update({
           where: { id: menuRecipeId },
           data: { cookedAt: new Date() },
@@ -73,6 +63,7 @@ export class CookingService {
         return { menuRecipeId, cookedAt: new Date(), consumed: [] };
       }
 
+      // 1) build needs in base unit
       const products = await tx.product.findMany({
         where: { id: { in: productIds } },
         select: { id: true, baseUnitId: true },
@@ -99,28 +90,42 @@ export class CookingService {
         needs.push({ productId: ing.productId, quantity: baseQty, baseUnitId: bu });
       }
 
-      // 2) load stock by product+location
+      // 2) load all batches for needed products
       const items = await tx.inventoryItem.findMany({
         where: { productId: { in: productIds } },
-        select: { productId: true, location: true, quantity: true },
+        select: {
+          id: true,
+          productId: true,
+          location: true,
+          quantity: true,
+          expiresAt: true,
+          acquiredAt: true,
+        },
       });
-      const stock = new Map<string, StockEntry[]>();
+      const batches = new Map<string, Batch[]>();
       for (const it of items) {
-        const list = stock.get(it.productId) ?? [];
-        list.push({ location: it.location as Loc, quantity: Number(it.quantity) });
-        stock.set(it.productId, list);
+        const list = batches.get(it.productId) ?? [];
+        list.push({
+          id: it.id,
+          productId: it.productId,
+          location: it.location as Loc,
+          quantity: Number(it.quantity),
+          expiresAt: it.expiresAt,
+          acquiredAt: it.acquiredAt,
+        });
+        batches.set(it.productId, list);
       }
 
-      // 3) plan
-      const plan = planConsumption({
+      // 3) plan via FEFO
+      const plan = pickBatches({
         needs,
-        stock,
+        batches,
         preferLocation: dto.preferLocation as Loc | undefined,
         fallbackOrder: FALLBACK_ORDER,
+        now: new Date(),
       });
 
       if (!plan.ok) {
-        // 422 carries the structured shortages so the client can show them.
         throw new HttpException(
           {
             statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
@@ -131,41 +136,62 @@ export class CookingService {
         );
       }
 
-      // 4) apply: decrement inventory + write CONSUMPTION txns
+      // 4) apply: drain batches (delete on zero), one CONSUMPTION txn per product
       const consumed: Array<{
         productId: string;
         baseUnitId: string;
         quantity: number;
-        fromLocations: { location: Loc; quantity: number }[];
+        fromBatches: Array<{
+          batchId: string;
+          location: Loc;
+          quantity: number;
+          expired: boolean;
+        }>;
       }> = [];
 
       for (const line of plan.lines) {
-        for (const take of line.takeFrom) {
-          await tx.inventoryItem.update({
-            where: {
-              productId_location: {
-                productId: line.productId,
-                location: take.location as InventoryLocation,
-              },
-            },
-            data: { quantity: { decrement: take.quantity } },
+        for (const take of line.takes) {
+          const row = await tx.inventoryItem.findUnique({
+            where: { id: take.batchId },
+            select: { quantity: true },
           });
-          await tx.inventoryTxn.create({
-            data: {
-              productId: line.productId,
-              quantity: -take.quantity,
-              unitId: line.baseUnitId,
-              source: InventoryTxnSource.CONSUMPTION,
-              refType: 'MenuRecipe',
-              refId: menuRecipeId,
-            },
-          });
+          if (!row) {
+            throw new BadRequestException(
+              `cook: batch ${take.batchId} disappeared mid-transaction`,
+            );
+          }
+          const next = Number(row.quantity) - take.quantity;
+          if (next <= EPS) {
+            await tx.inventoryItem.delete({ where: { id: take.batchId } });
+          } else {
+            await tx.inventoryItem.update({
+              where: { id: take.batchId },
+              data: { quantity: next },
+            });
+          }
         }
+
+        await tx.inventoryTxn.create({
+          data: {
+            productId: line.productId,
+            quantity: -line.quantity,
+            unitId: line.baseUnitId,
+            source: InventoryTxnSource.CONSUMPTION,
+            refType: 'MenuRecipe',
+            refId: menuRecipeId,
+          },
+        });
+
         consumed.push({
           productId: line.productId,
           baseUnitId: line.baseUnitId,
           quantity: line.quantity,
-          fromLocations: line.takeFrom,
+          fromBatches: line.takes.map((t) => ({
+            batchId: t.batchId,
+            location: t.location,
+            quantity: t.quantity,
+            expired: t.expired,
+          })),
         });
       }
 
@@ -180,5 +206,4 @@ export class CookingService {
   }
 }
 
-// Re-export Prisma type so callers don't have to import it just for this.
 export type Tx = Prisma.TransactionClient;

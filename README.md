@@ -105,3 +105,21 @@ End-to-end сценарий «Меню → Покупки → Инвентарь
 `preferLocation → PANTRY → FRIDGE → FREEZER`.
 
 Подробнее — в `.kiro/specs/`.
+
+
+### Expiry & Alerts (Phase 4)
+
+| Метод | Путь | Назначение |
+| --- | --- | --- |
+| GET | `/alerts/expiring?days=N` | Партии, у которых `expiresAt < now` (`status=EXPIRED`) или `now <= expiresAt <= now + N дней` (`status=SOON`); по умолчанию `days=3` |
+| GET | `/alerts/expiring/count?days=N` | Числа для бейджа: `{ expired, soon }` |
+| PATCH | `/shopping-lists/:listId/items/:itemId/purchase` | + поле `expiresAt?: ISO date` — попадёт на новую партию в инвентаре |
+| POST | `/inventory/adjust` | + поле `expiresAt?` для положительной корректировки; отрицательная списывает по FEFO |
+
+Фаза 4 разрешает несколько партий одного продукта в одной локации.
+Каждая покупка / положительная корректировка создаёт **отдельную партию**
+(`InventoryItem`) с собственным `expiresAt` и `acquiredAt`. Готовка и
+отрицательные корректировки списывают **FEFO** (first-expire-first-out):
+сначала просроченное, затем по `expiresAt asc` (партии без срока — в
+самом конце), tiebreak по `acquiredAt`. Опустевшие партии удаляются.
+Решение принимает чистая функция `pickBatches`.
