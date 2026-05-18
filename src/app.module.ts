@@ -1,9 +1,11 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
+import { CookingModule } from './cooking/cooking.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { MatchingModule } from './matching/matching.module';
 import { MenuModule } from './menu/menu.module';
+import { NutritionModule } from './nutrition/nutrition.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
 import { RecipesModule } from './recipes/recipes.module';
@@ -21,6 +23,8 @@ import { UnitsModule } from './units/units.module';
     MenuModule,
     InventoryModule,
     ShoppingModule,
+    CookingModule,
+    NutritionModule,
   ],
 })
 export class AppModule {}
