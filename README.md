@@ -123,3 +123,14 @@ End-to-end сценарий «Меню → Покупки → Инвентарь
 сначала просроченное, затем по `expiresAt asc` (партии без срока — в
 самом конце), tiebreak по `acquiredAt`. Опустевшие партии удаляются.
 Решение принимает чистая функция `pickBatches`.
+
+### Cooking history (Phase 5)
+
+| Метод | Путь | Назначение |
+| --- | --- | --- |
+| GET | `/cooking/history` | Лента приготовлений (по убыванию даты). Фильтры: `from`, `to`, `recipeId`, `menuId`, `limit` (1..200, default 50), `offset`. Каждое событие содержит `consumed` — сколько чего ушло из инвентаря, с положительными количествами. |
+| GET | `/recipes/:id/cooking-history` | История по конкретному рецепту: `{ recipe, timesCooked, lastCookedAt, items[] }`. Без пагинации. |
+| GET | `/cooking/stats?days=N` | Сводка за N дней (default 30, max 365): `{ totalCooks, distinctRecipes, topRecipes[5] }`. |
+
+Фаза 5 ничего нового в БД не пишет — это только удобный читающий слой
+поверх `MenuRecipe.cookedAt` и `InventoryTxn(source=CONSUMPTION)`.
