@@ -1,9 +1,12 @@
 import {
   IsEnum,
   IsInt,
+  IsNumber,
   IsOptional,
+  IsPositive,
   IsString,
   Matches,
+  Max,
   MaxLength,
   Min,
   MinLength,
@@ -17,6 +20,17 @@ export enum RecipeGroupDto {
   BAKING = 'BAKING',
   DESSERT = 'DESSERT',
   DRINK = 'DRINK',
+  PREP = 'PREP',
+}
+
+/**
+ * Phase 6.7. Where a produced PREP batch lands by default. PANTRY
+ * intentionally not allowed here — store-temperature semi-finished
+ * products are out of scope.
+ */
+export enum PrepDefaultLocationDto {
+  FRIDGE = 'FRIDGE',
+  FREEZER = 'FREEZER',
 }
 
 export class CreateRecipeDto {
@@ -45,4 +59,32 @@ export class CreateRecipeDto {
   @IsEnum(RecipeGroupDto)
   @IsOptional()
   group?: RecipeGroupDto;
+
+  // ---------- Phase 6.7: prep recipe fields ----------
+  // All five must be provided together, or none at all. The all-or-nothing
+  // rule is enforced in RecipesService (not via decorators, to keep this
+  // file readable).
+
+  @IsString()
+  @IsOptional()
+  producesProductId?: string;
+
+  @IsNumber()
+  @IsPositive()
+  @IsOptional()
+  prepYieldQuantity?: number;
+
+  @IsString()
+  @IsOptional()
+  prepYieldUnitId?: string;
+
+  @IsEnum(PrepDefaultLocationDto)
+  @IsOptional()
+  prepDefaultLocation?: PrepDefaultLocationDto;
+
+  @IsInt()
+  @Min(1)
+  @Max(3650)
+  @IsOptional()
+  prepShelfLifeDays?: number;
 }

@@ -7,7 +7,12 @@
  * conversion to it (global or product-specific).
  *
  * `group` corresponds to the navigation buttons on the frontend
- * (Завтраки / Супы / Основные блюда / Салаты / Выпечка / Десерты / Напитки).
+ * (Завтраки / Супы / Основные блюда / Салаты / Выпечка / Десерты / Напитки
+ * / Заготовки).
+ *
+ * Phase 6.7: PREP recipes additionally specify the produced product +
+ * yield + default location + shelf life. All five fields go together
+ * (or none at all). See .kiro/specs/phase-6.7-preps/design.md.
  */
 export type RecipeGroupLiteral =
   | 'BREAKFAST'
@@ -16,7 +21,10 @@ export type RecipeGroupLiteral =
   | 'SALAD'
   | 'BAKING'
   | 'DESSERT'
-  | 'DRINK';
+  | 'DRINK'
+  | 'PREP';
+
+export type PrepLocationLiteral = 'FRIDGE' | 'FREEZER';
 
 export interface SeedRecipe {
   slug: string;
@@ -30,6 +38,13 @@ export interface SeedRecipe {
     unitId: 'g' | 'kg' | 'ml' | 'l' | 'tbsp' | 'tsp' | 'pcs' | 'pinch';
     rawText: string;
   }>;
+
+  // Phase 6.7 — set together for PREP recipes only.
+  producesProductSlug?: string;
+  prepYieldQuantity?: number;
+  prepYieldUnitId?: 'g' | 'kg' | 'ml' | 'l' | 'pcs';
+  prepDefaultLocation?: PrepLocationLiteral;
+  prepShelfLifeDays?: number;
 }
 
 export const RECIPES: SeedRecipe[] = [
