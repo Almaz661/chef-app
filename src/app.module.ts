@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 
 import { AlertsModule } from './alerts/alerts.module';
 import { CookingModule } from './cooking/cooking.module';
+import { HistoryModule } from './history/history.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { MatchingModule } from './matching/matching.module';
 import { MenuModule } from './menu/menu.module';
@@ -27,6 +28,7 @@ import { UnitsModule } from './units/units.module';
     CookingModule,
     NutritionModule,
     AlertsModule,
+    HistoryModule,
   ],
 })
 export class AppModule {}
