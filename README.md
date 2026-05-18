@@ -47,7 +47,9 @@ prisma/
    npm run start:dev
    ```
 
-## REST endpoints (Фаза 1)
+## REST endpoints
+
+### Product Master (Phase 1)
 
 | Метод   | Путь                                  | Назначение |
 | ------- | ------------------------------------- | ---------- |
@@ -67,4 +69,25 @@ prisma/
 | GET     | `/matching/queue`                     | Очередь нерешённых ингредиентов |
 | POST    | `/matching/queue/:id/resolve`         | Привязать строку к продукту |
 
-Подробнее — в `.kiro/specs/phase-1-product-master/`.
+### Menu / Shopping / Inventory (Phase 2)
+
+| Метод | Путь | Назначение |
+| --- | --- | --- |
+| POST | `/menus` | Создать меню |
+| GET | `/menus`, `/menus/:id` | Список / детали меню |
+| PATCH | `/menus/:id` | Изменить меню |
+| DELETE | `/menus/:id` | Удалить меню |
+| POST | `/menus/:id/recipes` | Добавить рецепт в меню (`servings` опционально) |
+| DELETE | `/menus/:id/recipes/:menuRecipeId` | Убрать рецепт из меню |
+| POST | `/menus/:id/shopping-list` | Сгенерировать список покупок |
+| GET | `/shopping-lists/:id` | Получить список покупок |
+| PATCH | `/shopping-lists/:listId/items/:itemId/purchase` | Отметить позицию купленной → автоматически в инвентарь (атомарно) |
+| GET | `/inventory` | Запасы (фильтры: `productId`, `location`) |
+| POST | `/inventory/adjust` | Ручная корректировка остатков с обязательным `note` |
+
+End-to-end сценарий «Меню → Покупки → Инвентарь» закрыт в одной транзакции
+на шаге `markPurchased`: либо все три записи (item / inventory / audit)
+успешны, либо ни одна — состояния «отметил купленным, но в инвентаре
+пусто» возникнуть не может.
+
+Подробнее — в `.kiro/specs/`.
