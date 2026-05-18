@@ -149,12 +149,18 @@ async function seedRecipes(): Promise<void> {
   for (const r of RECIPES) {
     const recipe = await prisma.recipe.upsert({
       where: { slug: r.slug },
-      update: { title: r.title, description: r.description, servings: r.servings },
+      update: {
+        title: r.title,
+        description: r.description,
+        servings: r.servings,
+        group: r.group,
+      },
       create: {
         slug: r.slug,
         title: r.title,
         description: r.description,
         servings: r.servings,
+        group: r.group,
       },
     });
 
