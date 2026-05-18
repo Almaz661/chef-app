@@ -1,4 +1,11 @@
-import { IsEnum, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import {
+  IsDateString,
+  IsEnum,
+  IsNumber,
+  IsOptional,
+  IsPositive,
+  IsString,
+} from 'class-validator';
 
 import { InventoryLocationDto } from '../../inventory/dto/list-inventory.dto';
 
@@ -19,4 +26,12 @@ export class MarkPurchasedDto {
   @IsString()
   @IsOptional()
   note?: string;
+
+  /**
+   * Optional ISO date — when this batch goes off (`expiresAt`).
+   * If omitted, the resulting inventory batch has no expiry.
+   */
+  @IsDateString()
+  @IsOptional()
+  expiresAt?: string;
 }

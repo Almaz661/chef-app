@@ -236,6 +236,7 @@ export class ShoppingService {
 
       // 2) upsert inventory + 3) write audit, both inside this same tx
       const location = (dto.location as InventoryLocation | undefined) ?? DEFAULT_LOCATION;
+      const expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
       await this.inventory.addStockTx(tx as Prisma.TransactionClient, {
         productId: item.product.id,
         baseUnitId,
@@ -245,6 +246,7 @@ export class ShoppingService {
         refType: 'ShoppingListItem',
         refId: itemId,
         note: dto.note,
+        expiresAt,
       });
 
       return {
@@ -256,6 +258,7 @@ export class ShoppingService {
           location,
           addedQuantity: baseQty,
           baseUnitId,
+          expiresAt,
         },
       };
     });
