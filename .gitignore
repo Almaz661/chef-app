@@ -1,0 +1,25 @@
+# Node / TS
+node_modules/
+dist/
+*.log
+.npm
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Prisma
+prisma/.env
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Build artifacts
+*.tsbuildinfo
