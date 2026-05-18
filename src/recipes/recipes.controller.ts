@@ -8,10 +8,12 @@ import {
   Param,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common';
 
 import { AddIngredientsDto } from './dto/add-ingredients.dto';
 import { CreateRecipeDto } from './dto/create-recipe.dto';
+import { ListRecipesDto } from './dto/list-recipes.dto';
 import { UpdateRecipeDto } from './dto/update-recipe.dto';
 import { RecipesService } from './recipes.service';
 
@@ -19,9 +21,24 @@ import { RecipesService } from './recipes.service';
 export class RecipesController {
   constructor(private readonly recipes: RecipesService) {}
 
+  /**
+   * GET /recipes — supports filters via query string:
+   *   ?group=BREAKFAST     pick one of the 7 navigation buttons
+   *   ?search=паста        substring over title + description (CI)
+   * Both are optional and combine with AND.
+   */
   @Get()
-  list() {
-    return this.recipes.list();
+  list(@Query() filter: ListRecipesDto) {
+    return this.recipes.list(filter);
+  }
+
+  /**
+   * GET /recipes/groups — counts per group for navigation badges.
+   * Always returns all 7 groups + UNGROUPED, with zeros for empty ones.
+   */
+  @Get('groups')
+  groups() {
+    return this.recipes.groupCounts();
   }
 
   @Post()

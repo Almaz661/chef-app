@@ -96,19 +96,31 @@ model ProductAlias {
 
 // ---------- Recipes ----------
 
+enum RecipeGroup {
+  BREAKFAST   // Завтраки
+  SOUP        // Супы
+  MAIN        // Основные блюда
+  SALAD       // Салаты
+  BAKING      // Выпечка
+  DESSERT     // Десерты
+  DRINK       // Напитки
+}
+
 model Recipe {
-  id          String   @id @default(cuid())
-  slug        String   @unique
+  id          String       @id @default(cuid())
+  slug        String       @unique
   title       String
   description String?
-  servings    Int      @default(1)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  servings    Int          @default(1)
+  group       RecipeGroup?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
   ingredients RecipeIngredient[]
   queueItems  IngredientMatchQueue[]
   menuRecipes MenuRecipe[]
 
+  @@index([group])
   @@map("recipes")
 }
 
