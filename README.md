@@ -134,3 +134,16 @@ End-to-end сценарий «Меню → Покупки → Инвентарь
 
 Фаза 5 ничего нового в БД не пишет — это только удобный читающий слой
 поверх `MenuRecipe.cookedAt` и `InventoryTxn(source=CONSUMPTION)`.
+
+### Dietary substitutions (Phase 6)
+
+| Метод | Путь | Назначение |
+| --- | --- | --- |
+| GET | `/products/:id/substitutes?tags=vegan,gluten_free` | Список замен с флагом `matches: boolean` для каждой (подходит ли по требуемым тегам). Учитывает `bidirectional` связи. |
+| POST | `/products/:id/substitutes` | `{ substituteId, conversionRatio?, bidirectional?, note? }` — добавить замену. По умолчанию `bidirectional=true`. |
+| DELETE | `/products/:id/substitutes/:substituteId` | Удалить связь. |
+| GET | `/recipes/:id/diet-check?tags=vegan` | Проверить рецепт под диету. Возвращает `{ ok, incompatible[] }`, где у каждого несовместимого ингредиента есть `suggestions` — подходящие замены. |
+
+Теги — произвольные строки на `Product.tags` (`vegan`, `gluten_free`,
+`lactose_free`, `vegetarian`, `kosher`, ...). Фаза 6 не накладывает
+закрытый перечень — словарь расширяется по мере добавления продуктов.
