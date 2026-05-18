@@ -26,11 +26,13 @@ model Unit {
   name String
   kind UnitKind
 
-  productsBase    Product[]          @relation("ProductBaseUnit")
-  ingredients     RecipeIngredient[]
-  conversionsFrom UnitConversion[]   @relation("ConversionFromUnit")
-  conversionsTo   UnitConversion[]   @relation("ConversionToUnit")
-  queueItems      IngredientMatchQueue[]
+  productsBase     Product[]          @relation("ProductBaseUnit")
+  ingredients      RecipeIngredient[]
+  conversionsFrom  UnitConversion[]   @relation("ConversionFromUnit")
+  conversionsTo    UnitConversion[]   @relation("ConversionToUnit")
+  queueItems       IngredientMatchQueue[]
+  shoppingItems    ShoppingListItem[]
+  inventoryItems   InventoryItem[]
 
   @@map("units")
 }
@@ -66,9 +68,11 @@ model Product {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  aliases     ProductAlias[]
-  conversions UnitConversion[]
-  ingredients RecipeIngredient[]
+  aliases       ProductAlias[]
+  conversions   UnitConversion[]
+  ingredients   RecipeIngredient[]
+  shoppingItems ShoppingListItem[]
+  inventoryItems InventoryItem[]
 
   @@map("products")
 }
@@ -100,6 +104,7 @@ model Recipe {
 
   ingredients RecipeIngredient[]
   queueItems  IngredientMatchQueue[]
+  menuRecipes MenuRecipe[]
 
   @@map("recipes")
 }
@@ -140,4 +145,117 @@ model IngredientMatchQueue {
   @@index([recipeId])
   @@index([reason])
   @@map("ingredient_match_queue")
+}
+
+
+// ---------- Phase 2: Menu / Shopping / Inventory ----------
+
+model Menu {
+  id        String    @id @default(cuid())
+  name      String
+  startDate DateTime?
+  endDate   DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  recipes       MenuRecipe[]
+  shoppingLists ShoppingList[]
+
+  @@map("menus")
+}
+
+model MenuRecipe {
+  id           String    @id @default(cuid())
+  menuId       String
+  menu         Menu      @relation(fields: [menuId], references: [id], onDelete: Cascade)
+  recipeId     String
+  recipe       Recipe    @relation(fields: [recipeId], references: [id])
+  servings     Int       @default(1)
+  scheduledFor DateTime?
+  position     Int       @default(0)
+
+  @@index([menuId])
+  @@index([recipeId])
+  @@map("menu_recipes")
+}
+
+enum ShoppingListStatus {
+  ACTIVE
+  CLOSED
+}
+
+model ShoppingList {
+  id        String             @id @default(cuid())
+  menuId    String?
+  menu      Menu?              @relation(fields: [menuId], references: [id], onDelete: SetNull)
+  status    ShoppingListStatus @default(ACTIVE)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  closedAt  DateTime?
+
+  items ShoppingListItem[]
+
+  @@map("shopping_lists")
+}
+
+model ShoppingListItem {
+  id                String       @id @default(cuid())
+  shoppingListId    String
+  shoppingList      ShoppingList @relation(fields: [shoppingListId], references: [id], onDelete: Cascade)
+  productId         String
+  product           Product      @relation(fields: [productId], references: [id])
+  quantity          Decimal      @db.Decimal(18, 4)
+  unitId            String
+  unit              Unit         @relation(fields: [unitId], references: [id])
+  purchasedQuantity Decimal      @default(0) @db.Decimal(18, 4)
+  purchasedAt       DateTime?
+  note              String?
+  position          Int          @default(0)
+
+  @@index([shoppingListId])
+  @@index([productId])
+  @@map("shopping_list_items")
+}
+
+enum InventoryLocation {
+  PANTRY
+  FRIDGE
+  FREEZER
+}
+
+model InventoryItem {
+  id        String            @id @default(cuid())
+  productId String
+  product   Product           @relation(fields: [productId], references: [id])
+  quantity  Decimal           @db.Decimal(18, 4)
+  unitId    String
+  unit      Unit              @relation(fields: [unitId], references: [id])
+  location  InventoryLocation @default(PANTRY)
+  updatedAt DateTime          @updatedAt
+
+  @@unique([productId, location])
+  @@index([productId])
+  @@map("inventory_items")
+}
+
+enum InventoryTxnSource {
+  PURCHASE
+  CONSUMPTION
+  ADJUSTMENT
+  INITIAL
+}
+
+model InventoryTxn {
+  id        String             @id @default(cuid())
+  productId String
+  quantity  Decimal            @db.Decimal(18, 4)
+  unitId    String
+  source    InventoryTxnSource
+  refType   String?
+  refId     String?
+  note      String?
+  createdAt DateTime           @default(now())
+
+  @@index([productId, createdAt])
+  @@map("inventory_txns")
 }
