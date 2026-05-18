@@ -22,6 +22,8 @@ export interface SeedProduct {
   fatPer100?: number;
   carbsPer100?: number;
   tags?: string[];
+  /** Phase 6.7 — true for products produced by a PREP recipe. */
+  isPrep?: boolean;
 }
 
 const VEG = ['vegan', 'vegetarian', 'gluten_free', 'lactose_free'];
