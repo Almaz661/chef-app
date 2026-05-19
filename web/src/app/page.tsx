@@ -1,5 +1,8 @@
+'use client';
+
 import Link from 'next/link';
-import { getGroupCounts } from '@/lib/api';
+import { useEffect, useState } from 'react';
+import { getGroupCounts, GroupCount } from '@/lib/api';
 
 const GROUP_LABELS: Record<string, { label: string; emoji: string }> = {
   BREAKFAST: { label: 'Завтраки', emoji: '🥐' },
@@ -13,16 +16,18 @@ const GROUP_LABELS: Record<string, { label: string; emoji: string }> = {
   UNGROUPED: { label: 'Без группы', emoji: '📋' },
 };
 
-export const dynamic = 'force-dynamic';
+export default function HomePage() {
+  const [groups, setGroups] = useState<GroupCount[]>(
+    Object.keys(GROUP_LABELS).map((g) => ({ group: g, count: 0 })),
+  );
+  const [loading, setLoading] = useState(true);
 
-export default async function HomePage() {
-  let groups: Array<{ group: string; count: number }> = [];
-  try {
-    groups = await getGroupCounts();
-  } catch {
-    // API not available — show placeholder
-    groups = Object.keys(GROUP_LABELS).map((g) => ({ group: g, count: 0 }));
-  }
+  useEffect(() => {
+    getGroupCounts()
+      .then(setGroups)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
 
   return (
     <div>
@@ -39,12 +44,18 @@ export default async function HomePage() {
               <span className="text-3xl mb-2">{info.emoji}</span>
               <span className="font-medium text-sm text-gray-800">{info.label}</span>
               <span className="text-xs text-gray-400 mt-1">
-                {count} {count === 1 ? 'рецепт' : count < 5 ? 'рецепта' : 'рецептов'}
+                {loading ? '...' : `${count} ${count === 1 ? 'рецепт' : count < 5 ? 'рецепта' : 'рецептов'}`}
               </span>
             </Link>
           );
         })}
       </div>
+
+      {!loading && (
+        <p className="text-center text-xs text-gray-400 mt-8">
+          Данные загружаются с бэкенда. Если счётчики показывают 0 — бэкенд ещё не подключён.
+        </p>
+      )}
     </div>
   );
 }

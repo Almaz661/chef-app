@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
@@ -17,7 +18,7 @@ const GROUP_LABELS: Record<string, string> = {
   UNGROUPED: 'Без группы',
 };
 
-export default function RecipesPage() {
+function RecipesContent() {
   const searchParams = useSearchParams();
   const group = searchParams.get('group') ?? undefined;
   const [recipes, setRecipes] = useState<RecipeSummary[]>([]);
@@ -79,5 +80,13 @@ export default function RecipesPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function RecipesPage() {
+  return (
+    <Suspense fallback={<p className="text-gray-400 text-center py-12">Загрузка...</p>}>
+      <RecipesContent />
+    </Suspense>
   );
 }
