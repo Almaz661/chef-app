@@ -4,8 +4,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, RecipeGroup } from '@prisma/client';
+import { InventoryLocation, Prisma, RecipeGroup } from '@prisma/client';
 
+import { classifyPrepFields } from '../cooking/prep-yield';
 import { MatchingService } from '../matching/matching.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -75,6 +76,7 @@ export class RecipesService {
       'BAKING',
       'DESSERT',
       'DRINK',
+      'PREP',
       'UNGROUPED',
     ];
 
@@ -101,6 +103,7 @@ export class RecipesService {
   }
 
   async create(dto: CreateRecipeDto) {
+    const prep = this.assertPrepInvariant(dto);
     try {
       return await this.prisma.recipe.create({
         data: {
@@ -109,6 +112,11 @@ export class RecipesService {
           description: dto.description,
           servings: dto.servings ?? 1,
           group: dto.group as RecipeGroup | undefined,
+          producesProductId: prep ? prep.producesProductId : null,
+          prepYieldQuantity: prep ? prep.prepYieldQuantity : null,
+          prepYieldUnitId: prep ? prep.prepYieldUnitId : null,
+          prepDefaultLocation: prep ? (prep.prepDefaultLocation as InventoryLocation) : null,
+          prepShelfLifeDays: prep ? prep.prepShelfLifeDays : null,
         },
       });
     } catch (err) {
@@ -121,6 +129,20 @@ export class RecipesService {
 
   async update(id: string, dto: UpdateRecipeDto) {
     await this.findById(id);
+
+    // For update, only validate the invariant if any prep field was passed.
+    const touchesPrep = [
+      dto.producesProductId,
+      dto.prepYieldQuantity,
+      dto.prepYieldUnitId,
+      dto.prepDefaultLocation,
+      dto.prepShelfLifeDays,
+    ].some((v) => v !== undefined);
+    let prep: ReturnType<typeof this.assertPrepInvariant> = null;
+    if (touchesPrep) {
+      prep = this.assertPrepInvariant(dto);
+    }
+
     try {
       return await this.prisma.recipe.update({
         where: { id },
@@ -130,6 +152,17 @@ export class RecipesService {
           description: dto.description,
           servings: dto.servings,
           group: dto.group as RecipeGroup | undefined,
+          ...(touchesPrep
+            ? {
+                producesProductId: prep ? prep.producesProductId : null,
+                prepYieldQuantity: prep ? prep.prepYieldQuantity : null,
+                prepYieldUnitId: prep ? prep.prepYieldUnitId : null,
+                prepDefaultLocation: prep
+                  ? (prep.prepDefaultLocation as InventoryLocation)
+                  : null,
+                prepShelfLifeDays: prep ? prep.prepShelfLifeDays : null,
+              }
+            : {}),
         },
       });
     } catch (err) {
@@ -138,6 +171,40 @@ export class RecipesService {
       }
       throw err;
     }
+  }
+
+  /**
+   * Phase 6.7: enforces the all-or-nothing rule for the five prep fields.
+   * Returns the validated prep payload, or null if the recipe is regular.
+   */
+  private assertPrepInvariant(dto: CreateRecipeDto | UpdateRecipeDto): {
+    producesProductId: string;
+    prepYieldQuantity: number;
+    prepYieldUnitId: string;
+    prepDefaultLocation: string;
+    prepShelfLifeDays: number;
+  } | null {
+    const kind = classifyPrepFields({
+      producesProductId: dto.producesProductId ?? null,
+      prepYieldQuantity: dto.prepYieldQuantity ?? null,
+      prepYieldUnitId: dto.prepYieldUnitId ?? null,
+      prepDefaultLocation: dto.prepDefaultLocation ?? null,
+      prepShelfLifeDays: dto.prepShelfLifeDays ?? null,
+    });
+    if (kind === 'partial') {
+      throw new BadRequestException(
+        'producesProductId, prepYieldQuantity, prepYieldUnitId, ' +
+          'prepDefaultLocation and prepShelfLifeDays must all be provided together',
+      );
+    }
+    if (kind === 'regular') return null;
+    return {
+      producesProductId: dto.producesProductId as string,
+      prepYieldQuantity: dto.prepYieldQuantity as number,
+      prepYieldUnitId: dto.prepYieldUnitId as string,
+      prepDefaultLocation: dto.prepDefaultLocation as string,
+      prepShelfLifeDays: dto.prepShelfLifeDays as number,
+    };
   }
 
   async remove(id: string) {
