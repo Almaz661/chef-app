@@ -28,7 +28,7 @@ export interface CookEvent {
   consumed: ConsumedItem[];
 }
 
-interface ListResult {
+export interface ListResult {
   items: CookEvent[];
   total: number;
 }
