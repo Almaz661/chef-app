@@ -1,6 +1,7 @@
 import {
   ArrayUnique,
   IsArray,
+  IsBoolean,
   IsNumber,
   IsOptional,
   IsString,
@@ -56,4 +57,10 @@ export class CreateProductDto {
   @ArrayUnique()
   @IsOptional()
   tags?: string[];
+
+  // Phase 6.7: true for products produced by a PREP recipe (homemade
+  // broths, sauces, doughs). Default false for regular store-bought items.
+  @IsBoolean()
+  @IsOptional()
+  isPrep?: boolean;
 }

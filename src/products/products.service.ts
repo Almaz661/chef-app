@@ -45,6 +45,7 @@ export class ProductsService {
             fatPer100: dto.fatPer100,
             carbsPer100: dto.carbsPer100,
             tags: dto.tags ?? [],
+            isPrep: dto.isPrep ?? false,
           },
         });
 

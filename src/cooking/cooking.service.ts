@@ -6,7 +6,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InventoryTxnSource, Prisma } from '@prisma/client';
+import { InventoryLocation, InventoryTxnSource, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { convertQuantity } from '../units/unit-conversions';
@@ -14,9 +14,23 @@ import { UnitConverterService } from '../units/unit-converter.service';
 
 import { Batch, Loc, Need, pickBatches } from './cooking-planner';
 import { CookDto } from './dto/cook.dto';
+import {
+  classifyPrepFields,
+  computePrepYield,
+  PrepLocation,
+} from './prep-yield';
 
 const FALLBACK_ORDER: readonly Loc[] = ['PANTRY', 'FRIDGE', 'FREEZER'];
 const EPS = 1e-9;
+
+interface ProducedBatch {
+  productId: string;
+  inventoryItemId: string;
+  quantity: number;
+  unitId: string;
+  location: PrepLocation;
+  expiresAt: Date;
+}
 
 @Injectable()
 export class CookingService {
@@ -29,6 +43,14 @@ export class CookingService {
    * Mark a MenuRecipe as cooked. Phase 4 update: drains inventory by
    * FEFO across batches (`pickBatches`), deletes empty batches, writes
    * one InventoryTxn per product. Whole thing inside one $transaction.
+   *
+   * Phase 6.7 update: if the recipe is a PREP recipe (all five
+   * `producesProductId` / `prepYield*` / `prepDefaultLocation` /
+   * `prepShelfLifeDays` fields are non-null), additionally creates a
+   * fresh InventoryItem batch of the produced semi-finished product
+   * with `expiresAt = now + prepShelfLifeDays`, plus a
+   * `PREP_PRODUCTION` InventoryTxn for history. All in the same
+   * transaction.
    */
   async cook(menuRecipeId: string, dto: CookDto) {
     return this.prisma.$transaction(async (tx) => {
@@ -39,6 +61,11 @@ export class CookingService {
             select: {
               id: true,
               servings: true,
+              producesProductId: true,
+              prepYieldQuantity: true,
+              prepYieldUnitId: true,
+              prepDefaultLocation: true,
+              prepShelfLifeDays: true,
               ingredients: {
                 select: { productId: true, quantity: true, unitId: true },
               },
@@ -51,11 +78,31 @@ export class CookingService {
         throw new ConflictException('this menu recipe is already cooked');
       }
 
+      // Phase 6.7: validate the all-or-nothing PREP invariant before doing
+      // any work. A "partial" recipe is a data integrity bug.
+      const prepKind = classifyPrepFields({
+        producesProductId: mr.recipe.producesProductId,
+        prepYieldQuantity:
+          mr.recipe.prepYieldQuantity != null ? Number(mr.recipe.prepYieldQuantity) : null,
+        prepYieldUnitId: mr.recipe.prepYieldUnitId,
+        prepDefaultLocation: mr.recipe.prepDefaultLocation,
+        prepShelfLifeDays: mr.recipe.prepShelfLifeDays,
+      });
+      if (prepKind === 'partial') {
+        throw new BadRequestException(
+          `recipe ${mr.recipe.id} has partially-filled prep fields; ` +
+            'all of producesProductId / prepYieldQuantity / prepYieldUnitId / ' +
+            'prepDefaultLocation / prepShelfLifeDays must be set together',
+        );
+      }
+
       const recipeServings = mr.recipe.servings || 1;
       const scale = (mr.servings || recipeServings) / recipeServings;
 
       const productIds = [...new Set(mr.recipe.ingredients.map((i) => i.productId))];
-      if (productIds.length === 0) {
+
+      // Edge: PREP recipe with no ingredients still needs to produce a batch.
+      if (productIds.length === 0 && prepKind !== 'prep') {
         await tx.menuRecipe.update({
           where: { id: menuRecipeId },
           data: { cookedAt: new Date() },
@@ -64,44 +111,51 @@ export class CookingService {
       }
 
       // 1) build needs in base unit
-      const products = await tx.product.findMany({
-        where: { id: { in: productIds } },
-        select: { id: true, baseUnitId: true },
-      });
-      const baseUnit = new Map(products.map((p) => [p.id, p.baseUnitId]));
-      const dict = await this.converter.loadDictionary(productIds, tx);
-
+      let dict: Awaited<ReturnType<UnitConverterService['loadDictionary']>> | null = null;
       const needs: Need[] = [];
-      for (const ing of mr.recipe.ingredients) {
-        const bu = baseUnit.get(ing.productId);
-        if (!bu) {
-          throw new BadRequestException(
-            `cook: product ${ing.productId} has no baseUnit (data integrity)`,
-          );
+      if (productIds.length > 0) {
+        const products = await tx.product.findMany({
+          where: { id: { in: productIds } },
+          select: { id: true, baseUnitId: true },
+        });
+        const baseUnit = new Map(products.map((p) => [p.id, p.baseUnitId]));
+        dict = await this.converter.loadDictionary(productIds, tx);
+
+        for (const ing of mr.recipe.ingredients) {
+          const bu = baseUnit.get(ing.productId);
+          if (!bu) {
+            throw new BadRequestException(
+              `cook: product ${ing.productId} has no baseUnit (data integrity)`,
+            );
+          }
+          const qty = Number(ing.quantity) * scale;
+          const baseQty =
+            ing.unitId === bu
+              ? qty
+              : convertQuantity(dict, qty, ing.unitId, bu, ing.productId);
+          if (baseQty === null) {
+            throw new BadRequestException(
+              `cook: cannot convert ${ing.unitId} -> ${bu} for product ${ing.productId}`,
+            );
+          }
+          needs.push({ productId: ing.productId, quantity: baseQty, baseUnitId: bu });
         }
-        const qty = Number(ing.quantity) * scale;
-        const baseQty =
-          ing.unitId === bu ? qty : convertQuantity(dict, qty, ing.unitId, bu, ing.productId);
-        if (baseQty === null) {
-          throw new BadRequestException(
-            `cook: cannot convert ${ing.unitId} -> ${bu} for product ${ing.productId}`,
-          );
-        }
-        needs.push({ productId: ing.productId, quantity: baseQty, baseUnitId: bu });
       }
 
       // 2) load all batches for needed products
-      const items = await tx.inventoryItem.findMany({
-        where: { productId: { in: productIds } },
-        select: {
-          id: true,
-          productId: true,
-          location: true,
-          quantity: true,
-          expiresAt: true,
-          acquiredAt: true,
-        },
-      });
+      const items = productIds.length
+        ? await tx.inventoryItem.findMany({
+            where: { productId: { in: productIds } },
+            select: {
+              id: true,
+              productId: true,
+              location: true,
+              quantity: true,
+              expiresAt: true,
+              acquiredAt: true,
+            },
+          })
+        : [];
       const batches = new Map<string, Batch[]>();
       for (const it of items) {
         const list = batches.get(it.productId) ?? [];
@@ -196,12 +250,66 @@ export class CookingService {
       }
 
       const cookedAt = new Date();
+
+      // 5) Phase 6.7: PREP-recipe → produce a new inventory batch + txn.
+      let produced: ProducedBatch | undefined;
+      if (prepKind === 'prep') {
+        const yieldOut = computePrepYield({
+          producesProductId: mr.recipe.producesProductId as string,
+          prepYieldQuantity: Number(mr.recipe.prepYieldQuantity),
+          prepYieldUnitId: mr.recipe.prepYieldUnitId as string,
+          prepDefaultLocation: mr.recipe.prepDefaultLocation as PrepLocation,
+          prepShelfLifeDays: mr.recipe.prepShelfLifeDays as number,
+          scale,
+          now: cookedAt,
+        });
+
+        const created = await tx.inventoryItem.create({
+          data: {
+            productId: yieldOut.productId,
+            quantity: yieldOut.quantity,
+            unitId: yieldOut.unitId,
+            location: yieldOut.location as InventoryLocation,
+            expiresAt: yieldOut.expiresAt,
+            acquiredAt: yieldOut.acquiredAt,
+          },
+          select: { id: true },
+        });
+
+        await tx.inventoryTxn.create({
+          data: {
+            productId: yieldOut.productId,
+            quantity: yieldOut.quantity,
+            unitId: yieldOut.unitId,
+            source: InventoryTxnSource.PREP_PRODUCTION,
+            refType: 'MenuRecipe',
+            refId: menuRecipeId,
+          },
+        });
+
+        produced = {
+          productId: yieldOut.productId,
+          inventoryItemId: created.id,
+          quantity: yieldOut.quantity,
+          unitId: yieldOut.unitId,
+          location: yieldOut.location,
+          expiresAt: yieldOut.expiresAt,
+        };
+      }
+
       await tx.menuRecipe.update({
         where: { id: menuRecipeId },
         data: { cookedAt },
       });
 
-      return { menuRecipeId, cookedAt, consumed };
+      const response: {
+        menuRecipeId: string;
+        cookedAt: Date;
+        consumed: typeof consumed;
+        produced?: ProducedBatch;
+      } = { menuRecipeId, cookedAt, consumed };
+      if (produced) response.produced = produced;
+      return response;
     });
   }
 }
