@@ -11,7 +11,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { findIncompatibleIngredients, tagsAreCompatible } from './diet-tags';
 import { CreateSubstitutionDto } from './dto/create-substitution.dto';
 
-interface SubstitutionRow {
+export interface SubstitutionRow {
   productId: string;
   slug: string;
   name: string;
