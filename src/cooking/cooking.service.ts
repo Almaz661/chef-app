@@ -23,7 +23,7 @@ import {
 const FALLBACK_ORDER: readonly Loc[] = ['PANTRY', 'FRIDGE', 'FREEZER'];
 const EPS = 1e-9;
 
-interface ProducedBatch {
+export interface ProducedBatch {
   productId: string;
   inventoryItemId: string;
   quantity: number;

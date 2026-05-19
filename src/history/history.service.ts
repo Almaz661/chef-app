@@ -28,7 +28,7 @@ export interface CookEvent {
   consumed: ConsumedItem[];
 }
 
-interface ListResult {
+export interface ListResult {
   items: CookEvent[];
   total: number;
 }
@@ -191,8 +191,8 @@ export class HistoryService {
       topRecipes: grouped.map((g) => ({
         recipeId: g.recipeId,
         recipeTitle: titleMap.get(g.recipeId) ?? '(deleted)',
-        count: g._count.recipeId,
-        lastCookedAt: g._max.cookedAt as Date,
+        count: (g._count as any).recipeId,
+        lastCookedAt: (g._max as any).cookedAt as Date,
       })),
     };
   }

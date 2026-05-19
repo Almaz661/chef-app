@@ -4,7 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 
 const DEFAULT_DAYS = 3;
 
-interface ExpiringRow {
+export interface ExpiringRow {
   id: string;
   productId: string;
   productName: string;

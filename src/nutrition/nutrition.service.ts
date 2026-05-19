@@ -14,7 +14,7 @@ import {
   ZERO_NUTRITION,
 } from './nutrition-calc';
 
-interface RecipeNutritionResult {
+export interface RecipeNutritionResult {
   recipeId: string;
   servings: number;
   total: Nutrition;
@@ -23,7 +23,7 @@ interface RecipeNutritionResult {
   errors: ComputeNutritionResult['errors'];
 }
 
-interface MenuRecipeNutrition {
+export interface MenuRecipeNutrition {
   menuRecipeId: string;
   recipeId: string;
   recipeTitle: string;
@@ -33,7 +33,7 @@ interface MenuRecipeNutrition {
   errors: ComputeNutritionResult['errors'];
 }
 
-interface MenuNutritionResult {
+export interface MenuNutritionResult {
   menuId: string;
   total: Nutrition;
   incomplete: boolean;
