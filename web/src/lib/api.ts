@@ -206,3 +206,93 @@ export function getCookingStats(days = 30): Promise<{
 }> {
   return fetchJson(`/cooking/stats?days=${days}`);
 }
+
+
+
+// ---------- Menus ----------
+
+export interface Menu {
+  id: string;
+  name: string;
+  startDate: string | null;
+  endDate: string | null;
+  createdAt: string;
+  recipes?: MenuRecipeItem[];
+}
+
+export interface MenuRecipeItem {
+  id: string;
+  menuId: string;
+  recipeId: string;
+  servings: number;
+  scheduledFor: string | null;
+  position: number;
+  cookedAt: string | null;
+  recipe?: { id: string; slug: string; title: string; servings: number; group: string | null };
+}
+
+export function getMenus(): Promise<Menu[]> {
+  return fetchJson('/menus');
+}
+
+export function getMenu(id: string): Promise<Menu & { recipes: MenuRecipeItem[] }> {
+  return fetchJson(`/menus/${id}`);
+}
+
+export function createMenu(name: string): Promise<Menu> {
+  return fetchJson('/menus', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function addRecipeToMenu(menuId: string, recipeId: string, servings = 1): Promise<MenuRecipeItem> {
+  return fetchJson(`/menus/${menuId}/recipes`, {
+    method: 'POST',
+    body: JSON.stringify({ recipeId, servings }),
+  });
+}
+
+// ---------- Shopping ----------
+
+export interface ShoppingList {
+  id: string;
+  menuId: string | null;
+  status: string;
+  createdAt: string;
+  items: ShoppingListItem[];
+}
+
+export interface ShoppingListItem {
+  id: string;
+  productId: string;
+  product?: { id: string; name: string; slug: string };
+  quantity: string;
+  unitId: string;
+  unit?: { id: string; name: string };
+  purchasedQuantity: string;
+  purchasedAt: string | null;
+  note: string | null;
+}
+
+export function generateShoppingList(menuId: string): Promise<ShoppingList> {
+  return fetchJson(`/menus/${menuId}/shopping-list`, {
+    method: 'POST',
+    body: JSON.stringify({ subtractInventory: true }),
+  });
+}
+
+export function getShoppingList(id: string): Promise<ShoppingList> {
+  return fetchJson(`/shopping-lists/${id}`);
+}
+
+export function markPurchased(
+  listId: string,
+  itemId: string,
+  opts?: { quantity?: number; location?: string; expiresAt?: string },
+): Promise<unknown> {
+  return fetchJson(`/shopping-lists/${listId}/items/${itemId}/purchase`, {
+    method: 'PATCH',
+    body: JSON.stringify(opts ?? {}),
+  });
+}

@@ -3,25 +3,39 @@
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { getRecipe, getNutrition, RecipeDetail, Nutrition } from '@/lib/api';
+import { getRecipe, getNutrition, getMenus, addRecipeToMenu, RecipeDetail, Nutrition, Menu } from '@/lib/api';
 
 export default function RecipeDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [recipe, setRecipe] = useState<RecipeDetail | null>(null);
   const [nutrition, setNutrition] = useState<Nutrition | null>(null);
+  const [menus, setMenus] = useState<Menu[]>([]);
   const [loading, setLoading] = useState(true);
+  const [addMessage, setAddMessage] = useState('');
 
   useEffect(() => {
     if (!id) return;
     Promise.all([
       getRecipe(id).catch(() => null),
       getNutrition(id).catch(() => null),
-    ]).then(([r, n]) => {
+      getMenus().catch(() => []),
+    ]).then(([r, n, m]) => {
       setRecipe(r);
       setNutrition(n);
+      setMenus(m);
       setLoading(false);
     });
   }, [id]);
+
+  const handleAddToMenu = async (menuId: string) => {
+    if (!recipe) return;
+    try {
+      await addRecipeToMenu(menuId, recipe.id, recipe.servings);
+      setAddMessage(`Добавлено в меню!`);
+    } catch (e: any) {
+      setAddMessage(`Ошибка: ${e.message}`);
+    }
+  };
 
   if (loading) {
     return <p className="text-gray-400 text-center py-12">Загрузка...</p>;
@@ -92,14 +106,37 @@ export default function RecipeDetailPage() {
         </section>
       )}
 
-      {/* Cook button placeholder */}
-      <section className="mt-8 p-4 bg-blue-50 rounded-lg text-center">
-        <p className="text-sm text-gray-600 mb-2">
-          Чтобы приготовить, добавьте рецепт в меню через API, затем нажмите &laquo;Приготовить&raquo; на позиции меню.
-        </p>
-        <p className="text-xs text-gray-400">
-          POST /menus → POST /menus/:id/recipes → POST /menu-recipes/:mrId/cook
-        </p>
+      {/* Add to menu */}
+      <section className="mt-8 p-4 bg-blue-50 rounded-lg">
+        {addMessage && (
+          <div className="mb-3 p-2 bg-green-50 text-green-700 rounded text-sm">
+            {addMessage}
+            <button onClick={() => setAddMessage('')} className="ml-2 text-green-400">✕</button>
+          </div>
+        )}
+        {menus.length > 0 ? (
+          <div>
+            <p className="text-sm text-gray-600 mb-2 font-medium">Добавить в меню:</p>
+            <div className="flex flex-wrap gap-2">
+              {menus.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => handleAddToMenu(m.id)}
+                  className="px-3 py-1.5 bg-primary text-white rounded-lg text-sm hover:bg-blue-700 transition-colors"
+                >
+                  + {m.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="text-center">
+            <p className="text-sm text-gray-600 mb-2">Чтобы добавить рецепт, сначала создайте меню</p>
+            <Link href="/menu" className="text-primary hover:underline text-sm">
+              Перейти в Меню →
+            </Link>
+          </div>
+        )}
       </section>
     </div>
   );
